@@ -1,0 +1,893 @@
+---
+title: 'Project 1'
+author: "Farid Saud"
+output:
+    html_document:
+      toc: true
+      toc_float:
+        collapsed: false
+        smooth_scroll: true
+      toc_depth: 4
+      theme: cosmo
+      highlight: tango
+---
+
+**STAT 542** Statistical Learning <br> 
+
+<br> 
+
+### Libraries & Packages:
+
+```{r setup, echo=TRUE}
+knitr::opts_chunk$set(echo = TRUE,fig.align='center')
+
+library(knitr)
+library(class)
+
+# Progress bar
+library(progress)
+
+#For the plots:
+library(ggplot2)
+library(caret)
+library(tidyr)
+library(viridis)
+
+# regularization models
+library(glmnet)
+
+# tree based models
+library(randomForest)
+library(xgboost)
+```
+<br> 
+
+
+## **Part I: Loading and Pre-processing training data**
+<br> 
+
+### 1.1. Loading the data:
+
+The training data for this project is stored in 10 separate "folds", and these datasets contain the features and response variables.
+```{r}
+for (fold_number in 1:10) {
+  
+  # Construct the path to the files for this fold
+  fold_folder <- file.path("./proj1", paste0("fold", fold_number))
+  
+  # Read the training data
+  train_path <- file.path(fold_folder, "train.csv")
+  assign(paste0("train_", fold_number), read.csv(train_path, header = TRUE))
+
+}
+```
+<br>
+
+To show how these datasets look like, the first, fourth and seventh `train.csv` datasets are displayed:
+```{r}
+cat("train_1: ",dim(train_1))
+cat("\ntrain_4: ",dim(train_4))
+cat("\ntrain_7: ",dim(train_7))
+```
+<br>
+There are 2051 observations in each of the datasets. The 83 columns correspond to 82 features (numerical and categorical variables), plus the response variable **Y**, `Sale_Price`.
+
+<br>
+
+
+
+
+
+### 1.2. NA observations: 
+
+Prior to any analysis of the variables and transformations, if any is needed, it is critical to deal with missing values, if any. In this project, any incomplete observation is handled by transforming the "NA" into "0". By doing so, removing observations is avoided.
+
+<br>
+
+The function `complete.cases()` can provide insightful information to understand if there are any missing observations. With this function, an observation that has a `NA` in any variable would not be counted as an incomplete case. first, fourth and seventh `train.csv` datasets: 
+
+```{r}
+cat("train_1: ")
+table(complete.cases(train_1))
+
+cat("\ntrain_4: ")
+table(complete.cases(train_4))
+
+cat("\ntrain_7: ")
+table(complete.cases(train_7))
+```
+<br>
+
+Double checking for `is.na` observations:
+```{r}
+length(train_1[is.na(train_1)])
+```
+<br>
+The following loop transforms any `NA` into 0, in the 10 train dataframes: 
+```{r}
+for (fold_number in 1:10) {
+  
+  # Handle NAs for train_ data
+  train_data <- get(paste0("train_", fold_number))
+  train_data[is.na(train_data)] <- 0
+  assign(paste0("train_", fold_number), train_data)
+
+}
+```
+
+<br>
+
+
+
+
+
+
+
+
+### 1.3. Feature matrix X, Response vector Y, and Transformations:
+
+As mentioned earlier, the train dataframes contain 82 features and the response variable. It may be more convenient to have the response variable stored separately. In this step, `Sale_Price` is transformed into log(`Sale_Price`) before assigning it to the new object for the response variable, **Y_train_**:
+
+```{r}
+for (fold_number in 1:10) {
+  
+  # Extract the data for each fold
+  train_data <- get(paste0("train_", fold_number))
+  
+  # Assign transformed data back
+  assign(paste0("X.train_", fold_number), subset(train_data, select = -Sale_Price))
+  
+  # Assign the log-transformed Sale_Price to a new variable
+  assign(paste0("Y.train_", fold_number), log(train_data$Sale_Price))
+}
+```
+
+<br>
+
+
+The resulting matrices **X_train_** and vectors **Y_train_** have the following dimensions:
+
+
+```{r}
+cat("X.train_1: ",dim(X.train_1))
+cat("\nY.train_1: ",length(Y.train_1))
+```
+
+<br>
+
+
+In all of the 10 feature matrices X_train, the variables are of the types:
+```{r}
+type.counts <- table(sapply(X.train_1, class))
+type.counts
+```
+, and these correspond to:
+```{r}
+split(names(X.train_1), sapply(X.train_1, class))
+```
+<br>
+
+The character `character`, as well as the "Latitude" and "Longitude" variables will be treated as categorical variables. The rest of the variables will be treated as numerical variables. 
+
+
+
+
+
+
+<br>
+
+
+
+
+### 1.4. Categorical Variables
+
+<br>
+
+#### 1.4.1. Unbalanced categorical variables
+
+<br>
+
+It has been identified that 9 categorical variables are extremely unbalanced:
+
+- Street
+- Utilities
+- Condition_2
+- Roof_Matl
+- Heating
+- Pool_QC
+- Misc_Feature
+- Low_Qual_Fin_SF
+- Pool_Area
+
+To illustrate this, `Street`, `Utilities` and `Roof_Matl` categories counts and barplots are presented below:
+```{r}
+# Table
+table_street <- table(X.train_4$Street)
+print(table_street)
+
+# Barplot
+barplot(table_street, main="Distribution of Street", xlab="Street", ylab="Count")
+```
+```{r}
+# Table
+table_utilities <- table(X.train_4$Utilities)
+print(table_utilities)
+
+# Barplot
+barplot(table_utilities, main="Distribution of Utilities", xlab="Utilities", ylab="Count")
+```
+
+```{r}
+# Table
+table_roof_matl <- table(X.train_4$Roof_Matl)
+print(table_roof_matl)
+
+# Barplot
+barplot(table_roof_matl, main="Distribution of Roof_Matl", xlab="Roof_Matl", ylab="Count")
+```
+<br>
+
+
+These extremely unbalanced categorical variables would affect the predictive power of any models to be trained later. It was determined that these, alongside `latitude` and `longitude` are to be removed:
+
+```{r}
+# List of columns to remove
+columns_to_remove <- c('Street', 'Utilities', 'Condition_2', 'Roof_Matl', 'Heating', 
+                       'Pool_QC', 'Misc_Feature', 'Low_Qual_Fin_SF', 'Pool_Area', 
+                       'Longitude', 'Latitude')
+
+for (fold_number in 1:10) {
+  
+  # Extract the train data for this fold
+  train_data <- get(paste0("X.train_", fold_number))
+  
+  # Remove the columns
+  train_data <- train_data[, !(names(train_data) %in% columns_to_remove)]
+  
+  # Assign the modified data back
+  assign(paste0("X.train_", fold_number), train_data)
+}
+```
+<br>
+
+
+#### 1.4.2. Variable Encoding
+
+<br>
+
+The models to be trained in this analysis need to have the categorical variables enconded. For this, it was determined that the best way to handle this is by **One-hot encoding**. For each X.train_ dataframe, the categorical variables are encoded as follows:
+
+```{r}
+train_columns_list <- list()
+
+for (fold_number in 1:10) {
+  
+  # Extract the train data for this fold
+  train_data <- get(paste0("X.train_", fold_number))
+  
+  ## One-Hot Encoding of Categorical Variables
+  categorical.vars = colnames(train_data)[which(sapply(train_data, function(x) mode(x) == "character"))]
+  train.matrix = as.data.frame(train_data[, !colnames(train_data) %in% categorical.vars, drop = FALSE])
+  n.train = nrow(train.matrix)
+  for(var in categorical.vars) {
+    mylevels = sort(unique(train_data[, var]))
+    m = length(mylevels)
+    m = ifelse(m > 2, m, 1) 
+    tmp.train = matrix(0, n.train, m)
+    col.names = NULL
+    for(j in 1:m) {
+      tmp.train[train_data[, var] == mylevels[j], j] = 1
+      col.names = c(col.names, paste(var, '_', mylevels[j], sep = ''))
+    }
+    colnames(tmp.train) = col.names
+    train.matrix = cbind(train.matrix, tmp.train)
+  }
+  train_data = train.matrix
+  
+  # Assign the modified data back
+  assign(paste0("X.train_", fold_number), train_data)
+  
+  # Store column names of the transformed dataset in the list
+  train_columns_list[[fold_number]] <- colnames(train_data)
+}
+
+```
+<br>
+
+For consistency when working with the test datasets, the names of the columns kept are stored  in the `train_columns_list` list.
+
+
+
+<br>
+
+### 1.5. Numerical Variables
+
+
+#### 1.5.1. Winsorization
+
+It was suggested that the impact of some area-related variables should have a ceiling. For this analysis, the following 16 variables:
+
+- Lot_Frontage
+- Lot_Area
+- Mas_Vnr_Area
+- BsmtFin_SF_2
+- Bsmt_Unf_SF
+- Total_Bsmt_SF
+- Second_Flr_SF
+- First_Flr_SF
+- Gr_Liv_Area
+- Garage_Area
+- Wood_Deck_SF
+- Open_Porch_SF
+- Enclosed_Porch
+- Three_season_porch
+- Screen_Porch
+- Misc_Val
+
+, are capped at the corresponding 95% upper quantile:
+
+```{r}
+variables_to_winsorize <- c("Lot_Frontage", "Lot_Area", "Mas_Vnr_Area", "BsmtFin_SF_2", 
+                            "Bsmt_Unf_SF", "Total_Bsmt_SF", "Second_Flr_SF", "First_Flr_SF", 
+                            "Gr_Liv_Area", "Garage_Area", "Wood_Deck_SF", "Open_Porch_SF", 
+                            "Enclosed_Porch", "Three_season_porch", "Screen_Porch", "Misc_Val")
+
+for (fold_number in 1:10) {
+  
+  # Extract the train data for this fold
+  train_data <- get(paste0("X.train_", fold_number))
+  
+  ## Winsorization
+  upper_bounds_list <- list()
+  for (var in variables_to_winsorize) {
+    
+    # Check if the variable exists in the dataset
+    if (var %in% colnames(train_data)) {
+      upper_bound <- quantile(train_data[[var]], 0.95, na.rm = TRUE)
+      upper_bounds_list[[var]] <- upper_bound
+      train_data[[var]][train_data[[var]] > upper_bound] <- upper_bound
+    }
+  }
+  
+  # Assign the modified data back
+  assign(paste0("X.train_", fold_number), train_data)
+  
+  # Store upper bounds for this fold (optional)
+  assign(paste0("upper_bounds_", fold_number), upper_bounds_list)
+}
+
+```
+
+
+For consistency when working with the test datasets, the upper bounds of the winsorized numerical variables are stored  in the `upper_bounds_` lists.
+
+```{r}
+(str(upper_bounds_1))
+```
+
+
+<br><br>
+
+
+
+## **Part II: Predictive Models**
+
+### 2.1. Regularizatin model: 
+
+<br>
+
+#### **Ridge, Lasso & Elastic Nets**
+
+The `glmnet` library is a flexible and fast library that allows to fit **ridge regression** and **lasso regression** models, and **elastic net** models in between these two. Using the `cv.out()` function, a custom function to fit elastic net models is defined as follows:
+
+```{r}
+elastic_net_training <- function(fold_number, alfa) {
+  
+  # Extract the train data for this fold
+  train_ <- get(paste0("X.train_", fold_number))
+  Y_train <- get(paste0("Y.train_", fold_number))
+  
+  
+  # glmnet training:
+  ## X: Matrix
+  X = data.matrix(train_)
+  ## Y: Vector
+  Y = Y_train
+  
+  ## Model
+  cv.out = cv.glmnet(X, Y, alpha = alfa)  # Cross Validation for Lambda
+}
+```
+
+This function's output is an elastic net model fitted using "X.train_" and "Y.train_" from a fold. The function receives the `fold_number` as an input to be able to fit a model for any of the folds. It also receives the `alpha` parameter as an input, which allows for quick comparison between different elastic nets. 
+
+
+<br>
+
+This is how a model can be fit for a specific fold and alpha parameter:
+```{r}
+m1 <- elastic_net_training(1,0.5)
+m1
+summary(m1)
+```
+<br>
+
+### 2.2. Tree based models
+
+
+#### **Random Forest**
+
+<br>
+
+#### **XGBost**
+
+<br>
+
+
+
+## **Part III: Loading and pre-processing testing data**
+
+### 3.1. Loading the data:
+
+Just like it was done for the training data, the test data has to be read and processed. This test data has a slightly different format, as the features and response variable are already separated into 2 different files. Considering this, the data is loaded as follows:
+
+```{r}
+for (fold_number in 1:10) {
+  
+  # Construct the path to the files for this fold
+  fold_folder <- file.path("./proj1", paste0("fold", fold_number))
+  
+  # Read the test data
+  test_path <- file.path(fold_folder, "test.csv")
+  assign(paste0("X.test_", fold_number), read.csv(test_path, header = TRUE))
+  
+  # Read the test_y data
+  test_y_path <- file.path(fold_folder, "test_y.csv")
+  Y.test <- read.csv(test_y_path, header = TRUE)
+  assign(paste0("Y.test_", fold_number), Y.test$Sale_Price)
+}
+```
+
+<br>
+
+The resulting matrices **X.test_** and vectors **Y.test_** have the following dimensions:
+
+
+```{r}
+cat("X.test_1: ",dim(X.test_1))
+cat("\nY.test_1: ",length(Y.test_1))
+```
+
+### 3.2. Pre-processing:
+
+For consistency (and so that the predictive models work correctly), the same processing steps are taken for the test data.
+
+**NA observations**
+
+In this project, the incomplete observations are handled by transforming the "NA" into "0":
+
+```{r}
+table(complete.cases(X.test_1))
+table(complete.cases(Y.test_1))
+```
+<br>
+
+If any:
+```{r}
+for (fold_number in 1:10) {
+  
+  # Handle NAs for X.test_ data
+  test_data <- get(paste0("X.test_", fold_number))
+  test_data[is.na(test_data)] <- 0
+  assign(paste0("X.test_", fold_number), test_data)
+  
+  # Handle NAs for Y.test_ data
+  y_test_data <- get(paste0("Y.test_", fold_number))
+  y_test_data[is.na(y_test_data)] <- 0
+  assign(paste0("Y.test_", fold_number), y_test_data)
+}
+```
+
+After this process, there are no incomplete cases in the test datasets:
+```{r}
+table(complete.cases(X.test_7))
+```
+
+<br>
+
+
+
+**Categorical Variables**
+
+<br>
+The categorical variables of the test datasets have to match those in the train datasets. For this, the unbalanced categorical variables removed in the pre-processing of the training datasets:
+
+```{r}
+columns_to_remove
+```
+<br>
+
+, are removed from the test datasets as well:
+
+```{r}
+for (fold_number in 1:10) {
+  
+  # Extract the train data for this fold
+  test.data <- get(paste0("X.test_", fold_number))
+  
+  # Remove the columns
+  test.data <- test.data[, !(names(test.data) %in% columns_to_remove)]
+  
+  # Assign the modified data back
+  assign(paste0("X.test_", fold_number), test.data)
+}
+```
+
+<br>
+
+The remaining categorical variables have to be one-hot encoded, and the columns have to match those in the training datasets. For this, if there are any missing variables, such variables are added as columns with 0 as entries, and if there are any extra variables, these are removed:
+
+```{r}
+for (fold_number in 1:10) {
+  
+  # Extract the test data for this fold
+  test_data <- get(paste0("X.test_", fold_number))
+  
+  ## One-Hot Encoding of Categorical Variables
+  categorical.vars = colnames(test_data)[which(sapply(test_data, function(x) mode(x) == "character"))]
+  test.matrix = as.data.frame(test_data[, !colnames(test_data) %in% categorical.vars, drop = FALSE])
+  n.test = nrow(test.matrix)
+  for(var in categorical.vars) {
+    mylevels = sort(unique(test_data[, var]))
+    m = length(mylevels)
+    m = ifelse(m > 2, m, 1) 
+    tmp.test = matrix(0, n.test, m)
+    col.names = NULL
+    for(j in 1:m) {
+      tmp.test[test_data[, var] == mylevels[j], j] = 1
+      col.names = c(col.names, paste(var, '_', mylevels[j], sep = ''))
+    }
+    colnames(tmp.test) = col.names
+    test.matrix = cbind(test.matrix, tmp.test)
+  }
+  test_data = test.matrix
+  
+  # Make sure that the test dataset has the same columns as the train dataset for this fold
+  missing_columns <- setdiff(train_columns_list[[fold_number]], colnames(test_data))
+  extra_columns <- setdiff(colnames(test_data), train_columns_list[[fold_number]])
+  for(missing_col in missing_columns) {
+    test_data[[missing_col]] <- 0
+  }
+  test_data <- test_data[, train_columns_list[[fold_number]], drop = FALSE]
+  
+  # Assign the modified data back
+  assign(paste0("X.test_", fold_number), test_data)
+}
+
+```
+
+
+
+<br>
+
+
+
+**Numerical Variables**
+
+<br>
+The numerical variables are winsorized in the test datasets:
+
+```{r}
+for (fold_number in 1:10) {
+  
+  # Extract the test data for this fold
+  test_data <- get(paste0("X.test_", fold_number))
+  
+  # Get the upper bounds from the training set
+  upper_bounds_list <- get(paste0("upper_bounds_", fold_number))
+  
+  ## Winsorization using the upper bounds from the training set
+  for (var in variables_to_winsorize) {
+    
+    # Check if the variable exists in the dataset
+    if (var %in% colnames(test_data) && !is.null(upper_bounds_list[[var]])) {
+      upper_bound <- upper_bounds_list[[var]]
+      test_data[[var]][test_data[[var]] > upper_bound] <- upper_bound
+    }
+  }
+  
+  # Assign the modified data back
+  assign(paste0("X.test_", fold_number), test_data)
+}
+
+```
+
+
+
+
+
+
+<br><br>
+
+
+
+## **Part IV: Predictions and Results**
+
+
+### 4.1. Regularization
+
+This section presents the predictions and results for the regularization models fitted using glmnet. Lasso, Ridge and Elastic Net regression models are included: 
+
+<br>
+
+**Predictions**
+
+```{r}
+# Create a dataframe to store RMSE for each fold and alpha
+RMSE.elastic <- data.frame(matrix(NA, nrow=length(seq(0, 1, by=0.1)), ncol=10))
+colnames(RMSE.elastic) <- paste0("fold_", 1:10)
+rownames(RMSE.elastic) <- seq(0, 1, by=0.1)
+
+# Create a list to store predictions for each fold and alpha
+predictions.elastic <- list()
+
+# Progress
+pb <- progress_bar$new(total = 10, format = "[:bar] :percent :eta", clear = FALSE)
+
+# Loop over fold numbers
+for (fold_number in 1:10) {
+  
+  # Loop over alpha values
+  for (alfa in seq(0, 1, by=0.1)) {
+    
+    # Train the model using the function
+    cv.model <- elastic_net_training(fold_number, alfa)
+    
+    # Predict on the test data for this fold
+    test_ <- get(paste0("X.test_", fold_number))
+    X_test = data.matrix(test_)
+    predictions = predict(cv.model, newx = X_test, s = cv.model$lambda.min)
+    
+    # Compute RMSE
+    actual_values <- log(get(paste0("Y.test_", fold_number)))
+    rmse <- sqrt(mean((predictions[, 1] - actual_values)^2))
+    
+    # Store the RMSE in the dataframe
+    RMSE.elastic[as.character(alfa), paste0("fold_", fold_number)] <- rmse
+    
+    # Store the predictions (optional, based on your previous code)
+    predictions.elastic[[paste0("fold_", fold_number, "_alpha_", alfa)]] <- predictions
+
+  }
+  
+  # Update the progress bar
+  pb$tick()
+}
+```
+
+<br>
+
+**Results: RMSE**
+
+```{r}
+RMSE.elastic
+```
+
+<br>
+
+**Results: Plots**
+
+```{r}
+
+
+# Convert the RMSE.elastic dataframe to long format for plotting
+results_long <- tidyr::pivot_longer(RMSE.elastic, cols = starts_with("fold_"), 
+                                    names_to = "Fold", values_to = "RMSE")
+results_long$Alpha <- rep(rownames(RMSE.elastic), each=10)
+
+# Heatmap
+ggplot(results_long, aes(x = Fold, y = factor(Alpha, levels = rev(unique(Alpha))), fill = RMSE)) +
+  geom_tile() +
+  scale_fill_viridis_c() +
+  geom_text(aes(label=sprintf("%.3f", RMSE), 
+                color=ifelse((RMSE > 0.125 & as.numeric(gsub("fold_", "", Fold)) <= 5) | 
+                             (RMSE > 0.135 & as.numeric(gsub("fold_", "", Fold)) > 5), "red", "white")), 
+            size=3.5) +
+  scale_color_identity(guide = "none") +  # This line prevents the legend for text color
+
+  labs(title = "RMSE for Different Alphas across Folds", 
+       x = "Fold", y = "Alpha", fill = "RMSE") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+<br>
+
+```{r}
+# Line Plot with Thresholds
+results_long$Fold <- factor(results_long$Fold, levels = paste0("fold_", 1:10))
+ggplot(results_long, aes(x = Fold, y = RMSE, color = Alpha, group = Alpha)) +
+  geom_point() +
+  geom_line(linewidth = 0.1) +
+  geom_hline(yintercept = 0.125, linetype = "dashed", color = "darkblue", size = 0.5) +
+  geom_hline(yintercept = 0.135, linetype = "dashed", color = "firebrick", size = 0.5) +
+  annotate("text", x = "fold_3", y = 0.126, label = "Threshold: 0.125 (Folds 1-5)", color = "darkblue") +
+  annotate("text", x = "fold_8", y = 0.136, label = "Threshold: 0.135 (Folds 6-10)", color = "firebrick") +
+  labs(title = "RMSE for Different Alphas across Folds", 
+       x = "Fold", y = "RMSE", color = "Alpha") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
+<br>
+
+### 4.2. Random Forest
+
+This section presents the Random Forest models predictions and results using 500 trees:
+
+
+**Predictions**
+
+```{r}
+# RMSE of RandomForest model
+RMSE.rf <- data.frame(matrix(ncol = 10, nrow = 1))
+names(RMSE.rf) <- paste0("fold_", 1:10)
+
+# Create a list to store predictions for each fold and alpha
+predictions.rf <- list()
+
+# Progress
+pb <- progress_bar$new(total = 10, format = "[:bar] :percent :eta", clear = FALSE)
+
+# Loop through the 10 folds for randomForest models
+for (fold in 1:10) {
+  
+  # 0. Get X and Y for training the model
+  x <- get(paste0("X.train_", fold))
+  y <- get(paste0("Y.train_", fold))
+  
+  # 1. Train the random forest model
+  rf_model <- randomForest(x, y, ntree = 500)
+  
+  # 2. Predict on test data
+  test_ <- get(paste0("X.test_", fold))
+  predictions_rf <- predict(rf_model, newdata = test_)
+  
+  # 3. Calculate RMSE
+  test_y_ <- get(paste0("Y.test_", fold))
+  RMSE.rf[1, paste0("fold_", fold)] <- sqrt(mean((predictions_rf - log(test_y_))^2))
+  
+  # Update the progress bar
+  pb$tick()
+}
+```
+
+<br>
+
+**Results: RMSE**
+
+```{r}
+RMSE.rf
+```
+
+<br>
+
+**Results: Plots**
+
+```{r}
+# Convert RMSE.rf to long format
+rf_results_long <- tidyr::pivot_longer(RMSE.rf, cols = starts_with("fold_"), 
+                                       names_to = "Fold", values_to = "RMSE")
+
+# Line Plot with Thresholds for RandomForest
+rf_results_long$Fold <- factor(rf_results_long$Fold, levels = paste0("fold_", 1:10))
+
+ggplot(rf_results_long, aes(x = Fold, y = RMSE, group = 1)) +
+  geom_point(shape=4) +
+  geom_line(linewidth = 0.1) +
+  geom_hline(yintercept = 0.125, linetype = "dashed", color = "darkblue", size = 0.5) +
+  geom_hline(yintercept = 0.135, linetype = "dashed", color = "firebrick", size = 0.5) +
+  annotate("text", x = "fold_3", y = 0.126, label = "Threshold: 0.125 (Folds 1-5)", color = "darkblue") +
+  annotate("text", x = "fold_8", y = 0.136, label = "Threshold: 0.135 (Folds 6-10)", color = "firebrick") +
+  labs(title = "Random Forest RMSE across Folds", 
+       x = "Fold", y = "RMSE") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
+
+
+
+
+<br>
+
+### 4.3. Random Forest
+
+This section presents the XGBoost models predictions and results:
+
+
+**Predictions**
+
+```{r}
+# Placeholder for storing RMSE values for each fold
+RMSE.xgb <- data.frame(matrix(ncol = 10, nrow = 1))
+names(RMSE.xgb) <- paste0("fold_", 1:10)
+
+# Create a list to store predictions for each fold
+predictions.xgb <- list()
+
+# Progress
+pb <- progress_bar$new(total = 10, format = "[:bar] :percent :eta", clear = FALSE)
+
+# Loop through the 10 folds for xgboost models
+for (fold in 1:10) {
+  
+  # Prepare training and testing data in xgb.DMatrix format
+  x_train <- get(paste0("X.train_", fold))
+  y_train <- get(paste0("Y.train_", fold))
+  dtrain <- xgb.DMatrix(data = as.matrix(x_train), label = y_train)
+  
+  x_test <- get(paste0("X.test_", fold))
+  dtest <- xgb.DMatrix(data = as.matrix(x_test))
+  
+  # Train the XGBoost model
+  xgb_model <- xgboost(data = dtrain, eta = 0.05, max_depth = 6, subsample = 0.5, nrounds = 5000, verbose=0)
+  
+  # Predict on test data
+  predictions <- predict(xgb_model, dtest)
+  
+  # Compute RMSE
+  test_y_ <- get(paste0("Y.test_", fold))
+  RMSE.xgb[1, paste0("fold_", fold)] <- sqrt(mean((predictions - log(test_y_))^2))
+  
+  # Store the predictions (optional)
+  predictions.xgb[[paste0("fold_", fold)]] <- predictions
+  
+  # Update the progress bar
+  pb$tick()
+}
+```
+
+<br>
+
+**Results: RMSE**
+
+```{r}
+RMSE.xgb
+```
+
+<br>
+
+**Results: Plots**
+
+```{r}
+# Convert RMSE.xgb to long format
+rf_results_long <- tidyr::pivot_longer(RMSE.xgb, cols = starts_with("fold_"), 
+                                       names_to = "Fold", values_to = "RMSE")
+
+# Line Plot with Thresholds for XGBoost
+rf_results_long$Fold <- factor(rf_results_long$Fold, levels = paste0("fold_", 1:10))
+
+ggplot(rf_results_long, aes(x = Fold, y = RMSE, group = 1)) +
+  geom_point(shape=4) +
+  geom_line(linewidth = 0.1) +
+  geom_hline(yintercept = 0.125, linetype = "dashed", color = "darkblue", size = 0.5) +
+  geom_hline(yintercept = 0.135, linetype = "dashed", color = "firebrick", size = 0.5) +
+  annotate("text", x = "fold_3", y = 0.126, label = "Threshold: 0.125 (Folds 1-5)", color = "darkblue") +
+  annotate("text", x = "fold_8", y = 0.136, label = "Threshold: 0.135 (Folds 6-10)", color = "firebrick") +
+  labs(title = "Gradient Boosting RMSE across Folds", 
+       x = "Fold", y = "RMSE") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
+
+
+
+
+
+
