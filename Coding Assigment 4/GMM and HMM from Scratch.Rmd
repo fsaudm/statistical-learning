@@ -1,0 +1,866 @@
+---
+title: 'Gaussian Mixture Model (GMM) and Hidden Markov Model (HMM): Implementation from scratch in R'
+author: "Farid Saud"
+output:
+    html_document:
+      code_folding: show
+      toc: true
+      toc_float:
+        collapsed: false
+        smooth_scroll: true
+      toc_depth: 3
+      theme: cosmo
+      highlight: tango
+---
+Notes on the making of this code/R markdown file, and total run-time are presented at the end of this document. To download the data and the source code, click [here](./GMM - HMM files.zip).
+
+### **Set-up**
+```{r setup, echo = TRUE}
+knitr::opts_chunk$set(echo = TRUE,fig.align='center')
+start.time <- Sys.time()
+```
+
+
+### **Libraries**
+```{r, echo=TRUE}
+library(ggplot2)
+library(progress)
+library(HMM)
+library(viridis)
+
+options(digits=8)
+start.time <- Sys.time()
+```
+<br>
+
+## **Part I: Gaussian Mixtures**
+
+### Objective
+
+Part I presents the mplemention of the EM algorithm from scratch for a p-dimensional Gaussian mixture model with G components:
+
+
+\[\sum_{k=1}^{G} p_k \cdot N(x; \mu_k, \Sigma)\]
+
+
+This implementation consists of four functions:
+
+- `Estep` function: This function should return an \( n \times G \) matrix, where the \( (i,j) \)th entry represents the conditional probability \( P(Z_i = k | x_i) \). Here \( i \) ranges from 1 to \( n \) and \( k \) ranges from 1 to \( G \).
+
+- `Mstep` function: This function should return the updated parameters for the Gaussian mixture model.
+
+- `loglik` function: This function computes the log-likelihood of the data given the parameters.
+
+- `myEM` function (main function): Inside this function, you can call the `Estep`, `Mstep`, and `loglik` functions. The function should take the following inputs and return the estimated parameters and log-likelihood:
+
+    - **Input**:
+        - `data`: The dataset.
+        - \( G \): The number of components.
+        - Initial parameters.
+        - `itmax`: The number of iterations.
+
+    - **Output**:
+        - `prob`: A \( G \)-dimensional probability vector \( (p_1, \dots, p_G) \).
+        - `mean`: A \( p \times G \) matrix with the \( k \)-th column being \( \mu_k \), the \( p \)-dimensional mean for the \( k \)-th Gaussian component.
+        - `Sigma`: A \( p \times p \) covariance matrix \( \Sigma \) shared by all \( G \) components;
+        - `loglik`: A number equal to \( \sum_{i=1}^{n} \log \left[ \sum_{k=1}^{G} p_k \cdot N(x; \mu_k, \Sigma) \right] \).
+
+
+
+<br>
+
+**Implementation Guidelines**:
+
+This implementation:
+
+1. Avoids explicit loops over the sample size \( n \).
+2. If needed, uses loops over the number of components \( G \).
+3. Does not use pre-existing functions or packages for evaluating normal densities.
+
+
+<br>
+
+
+
+
+### **E-step function**
+```{r}
+Estep <- function(X, mu, p, sigma, G) {
+  
+  ## Notes 
+  
+  # INPUT
+  # **n** is the number of rows in the data matrix X.
+  # **mu** is a matrix of [p(parameters),G] dimensions, where mu1=mu[,1], mu2=mu[,2], and so on.
+  # **p** is a vector of [1,G] entries, where p(Z1)=p[1] and so on.
+  # **sigma** is a [p,p] matrix. 
+  
+  # OUTPUT
+  # **W** is the output matrix of dimensions [n,G], where each row is associated with an observation, and each column with a certain Gaussian distribution and Z. So the [i,j] element corresponds to the probability that observation Xi comes from the normal dist. Gj.
+  
+  
+  
+  # Implementation
+  
+  # Step 0: Definition of parameters
+  n <- dim(X)[1]
+  d <- dim(X)[2]
+  W <- matrix(0, nrow = n, ncol = G)
+  
+  # Step 1: Calculate the transpose of the data matrix A
+  A <- t(X)
+
+  # Step 2: Compute Σ^(-1)(A - μ) and perform element-wise multiplication Σ^(-1)(A - μ)*(A - μ)
+  # Step 3: Sum the columns
+  for (i in 1:G) {
+    tmp1 <- solve(sigma) %*% (A - mu[i,]) * (A - mu[i,])
+    tmp2 <- colSums(tmp1)
+    
+  
+  # Step 4: Calculate the Gaussian/Normal densities
+    gaussian.density = exp(-1/2 * tmp2) / sqrt((2*pi)^d * det(sigma)) 
+  
+
+  
+  # Step 5: Calculate the distribution of Z
+    W[,i] = t(p[i] * gaussian.density)
+  }
+   
+  
+  # **W**
+   w=W/rowSums(W)
+   
+  return(w)
+}
+```
+
+
+<br>
+
+### **M-step function**
+```{r}
+Mstep <- function(X, G, w) {
+  
+  ## Notes on the implementation
+  
+  # Step 0: Definition of parameters
+  n <- dim(X)[1]
+  A <- t(X)
+  
+  new.p <- numeric(G)
+  new.mu <- matrix(0, nrow = dim(X)[2], ncol = G)
+  new.sigma <- array(0, dim = c(dim(X)[2], dim(X)[2]))
+  
+  
+  ######
+  for (i in 1:G) {
+  
+  # Step 1: Updating the parameters
+  
+    ## Mixing coeffs p
+    new.p[i] <- sum(w[, i]) / n
+    
+    ## Means mu
+    new.mu[,i] <- colSums(w[, i] * X) / sum(w[, i])
+  }
+    
+  
+  for (i in 1:G) {    
+    ## Sigma 
+    tmp.s <- as.matrix(sweep(X, 2, new.mu[,i], FUN = "-"))
+    
+    new.sigma <- new.sigma + (t(tmp.s) %*% diag(w[,i]) %*% tmp.s) / sum(w)
+  }
+  
+  
+    # OUTPUT
+  return(parameters <- list(p = new.p, mu = new.mu, sigma = new.sigma))
+}
+```
+
+
+
+<br>
+
+### **Log-likelihood**
+
+```{r}
+log.likihood <- function(X, mu, p, sigma, G, w) {
+  
+  # Step 0: Definition of parameters
+  n <- dim(X)[1]
+  d <- dim(X)[2]
+  A <- t(X)
+  
+  # Initialize the log-likelihood
+  log.likelihood <- numeric(n)
+
+  for (i in 1:G) {
+    tmp1 <- solve(sigma) %*% (A - mu[,i]) * (A - mu[,i])
+    tmp2 <- colSums(tmp1)
+    
+    gaussian.density = exp(-1/2 * tmp2) / sqrt((2*pi)^d * det(sigma)) 
+
+    gmm = p[i] * gaussian.density
+    
+    #log.likelyhood <- w[,i] * log(gmm)
+    log.likelihood <- log.likelihood + (gmm)
+  }
+log.likelihood=log(log.likelihood)
+  # if any NaN, =0
+  log.likelihood[is.na(log.likelihood)] = 0
+  
+  # Return the log-likelihood
+  return(sum(log.likelihood))
+}
+```
+
+<br>
+
+### Iterative function: myEM Function
+
+```{r}
+myEM <- function(X, mu, p, sigma, G, itmax){
+  
+  Estep <- Estep(X, mu, p, sigma, G)
+  w <- Estep
+  
+  Mstep <- Mstep(X, G, w)
+  p <- Mstep$p
+  mu <- Mstep$mu
+  sigma <- Mstep$sigma
+  
+  
+  for (i in 2:itmax) {
+    Estep <- Estep(X, t(mu), p, sigma, G)
+    
+      w <- Estep
+  
+      
+    Mstep <- Mstep(X, G, w)
+    
+      p <- Mstep$p
+      mu <- Mstep$mu
+      sigma <- Mstep$sigma
+  }
+  
+  
+  loglik <- log.likihood(X, mu, p, sigma, G, w)
+  
+    return(list(prob = p, mean = mu, Sigma = sigma, loglik = loglik))
+} 
+```
+
+<br>
+
+
+
+### Testing
+
+In this subsection, the code is tested with the provided dataset, [faithful.dat](./faithful.dat), with both \( G = 2 \) and \( G = 3 \).
+
+
+<br>
+
+
+#### **Reading the data**
+
+```{r}
+X <- read.table("faithful.dat", header = TRUE) 
+X[1:15,] 
+```
+
+
+
+
+<br>
+
+#### **G=2**
+
+For the case when \( G = 2 \), the initial values are set as follows:
+
+- \( p_1 = \frac{10}{n} \) and \( p_2 = 1 - p_1 \).
+- \( \mu_1 \) is the mean of the first 10 samples; \( \mu_2 \) is the mean of the remaining samples.
+- \( \Sigma \) is calulated as:
+
+\[ \frac{1}{n} \left[ \sum_{i=1}^{10} (x_i - \mu_1) (x_i - \mu_1)^t + \sum_{i=11}^{n} (x_i - \mu_2) (x_i - \mu_2)^t \right] \]
+
+Here \( x_i - \mu_i \) is a 2-by-1 vector, so the resulting \( \Sigma \) matrix is a 2-by-2 matrix.
+
+The EM implementation runs for 20 iterations. The results from `myEM` are expected to look like the following. (Even though the algorithm has not yet reached convergence, matching the expected results below serves as a validation that the code is functioning as intended.)
+
+```{r, class.source = 'fold-hide'}
+prob <- c(0.04297883, 0.95702117)
+mean <- matrix(c(3.495642, 76.797892, 3.48743, 70.63206), ncol=2, byrow=TRUE)
+rownames(mean) <- c("eruptions", "waiting")
+colnames(mean) <- c("[,1]", "[,2]")
+Sigma <- matrix(c(1.297936, 13.924336, 13.92434, 182.58009), ncol=2, byrow=TRUE)
+rownames(Sigma) <- c("eruptions", "waiting")
+colnames(Sigma) <- c("eruptions", "waiting")
+loglik <- -1289.569
+
+list(prob = prob, mean = mean, Sigma = Sigma, loglik = loglik)
+```
+
+<br>
+
+
+**Input parameters**
+
+
+Using the following input parameters:
+```{r}
+G <- 2
+
+n <- dim(X)[1]
+
+p1 <- 10/n
+p2 <- 1-p1
+p <- c( p1 , p2)
+
+mu1 <- colMeans(X[1:10,]) 
+mu2 <- colMeans(X[11:nrow(X),]) 
+mu <- t(cbind(mu1, mu2))
+
+Xmatr=t(as.matrix(X));
+Xmu <- matrix(0, nrow = nrow(Xmatr), ncol = ncol(Xmatr));
+
+for (i in 1:ncol(Xmatr)) {
+    if (i < 11) {
+        Xmu[,i] = Xmatr[,i] - mu1;
+    } else {
+        Xmu[,i] = Xmatr[,i] - mu2;
+    }
+}
+
+sigma <- 1/n * (Xmu %*% t(Xmu))
+
+list(G=G, n=n,p=p, mu=mu, sigma=sigma)
+```
+
+
+<br>
+, the code runs through 20 iterations, and the results are displayed below:
+
+```{r}
+itmax = 20
+myEM(X, mu, p, sigma, G, itmax)
+```
+
+
+
+
+<br>
+
+#### **G=3**
+
+
+For the case when \( G = 3 \), the initial values are set as follows:
+
+- \( p_1 = \frac{10}{n} \), \( p_2 = \frac{20}{n} \), \( p_3 = 1 - p_1 - p_2 \)
+- \( \mu_1 = \frac{1}{10} \sum_{i=1}^{10} x_i \), the mean of the first 10 samples;
+- \( \mu_2 = \frac{1}{20} \sum_{i=11}^{30} x_i \), the mean of the next 20 samples;
+- \( \mu_3 \) is the mean of the remaining samples.
+- \( \Sigma \) is calculated as:
+\[
+\frac{1}{n} \left[ \sum_{i=1}^{10} (x_i - \mu_1) (x_i - \mu_1)^t + \sum_{i=11}^{30} (x_i - \mu_2) (x_i - \mu_2)^t + \sum_{i=31}^{n} (x_i - \mu_3) (x_i - \mu_3)^t \right]
+\]
+
+Just like for the previous case, the code goes through 20 iterations. The results from `myEM` are expected to look like the following.
+
+```{r, echo=FALSE}
+prob <- c(0.04363422, 0.07718656, 0.87917922)
+mean <- matrix(c(3.510069, 77.105638, 2.816167, 63.357526, 3.545641, 71.250848), ncol=3, byrow=TRUE)
+rownames(mean) <- c("eruptions", "waiting")
+colnames(mean) <- c("[,1]", "[,2]", "[,3]")
+Sigma <- matrix(c(1.260158, 13.511538, 13.51154, 177.96419), ncol=2, byrow=TRUE)
+rownames(Sigma) <- c("eruptions", "waiting")
+colnames(Sigma) <- c("eruptions", "waiting")
+loglik <- -1289.351
+
+list(prob = prob, mean = mean, Sigma = Sigma, loglik = loglik)
+```
+
+<br>
+
+**Input parameters**
+
+With the following input parameters:
+```{r}
+
+G <- 3
+
+n <- dim(X)[1]
+
+p1 <- 10/n
+p2 <- 20/n
+p3 <- 1-p1-p2
+p <- c( p1 , p2, p3)
+
+
+mu1 <- colMeans(X[1:10,]) 
+mu2 <- colMeans(X[11:30,]) 
+mu3 <- colMeans(X[31:nrow(X),]) 
+mu <- t(cbind(mu1, mu2,mu3))
+
+Xmatr=t(as.matrix(X));
+Xmu <- matrix(0, nrow = nrow(Xmatr), ncol = ncol(Xmatr));
+
+for (i in 1:ncol(Xmatr)) {
+    if (i < 11) {
+        Xmu[, i] = Xmatr[, i] - mu1;
+    } else if (i >= 11 && i <= 30) {
+        Xmu[, i] = Xmatr[, i] - mu2;
+    } else {
+        Xmu[, i] = Xmatr[, i] - mu3;
+    }
+}
+sigma <- 1/n * (Xmu %*% t(Xmu))
+
+list(p=p, mu=mu, simga=sigma)
+```
+
+<br>
+
+, the implementation returns:
+```{r}
+itmax = 20
+myEM(X, mu, p, sigma, G, itmax)
+```
+
+
+<br>
+<br>
+
+
+
+
+
+## **Part II: HMM**
+
+### Objective
+
+
+In this section, the Baum-Welch (i.e., EM) algorithm and the Viterbi algorithm are implemented from scratch for a Hidden Markov Model (HMM) that produces an outcome sequence of discrete random variables with three distinct values.
+
+A Quick Review on Parameters for Discrete HMM:
+
+- `m_x`: Count of distinct values \( X \) can take.
+- `m_z`: Count of distinct values \( Z \) can take.
+- `w`: An \( m_z \)-by-1 probability vector representing the initial distribution for \( Z_1 \).
+- `A`: The \( m_z \)-by-\( m_z \) transition probability matrix that models the progression from \( Z_t \) to \( Z_{t+1} \).
+- `B`: The \( m_z \)-by-\( m_x \) emission probability matrix, indicating how \( X \) is produced from \( Z \).
+
+The focus is on updating the parameters `A` and `B` in your algorithm. The value for `m_x` is given and you’ll specify `m_z`.
+
+The parameter `w` is generated uniformly, but is not updated in this code. The reason for this is that `w` denotes the distribution of `Z_1` and there is only a single sample. It’s analogous to estimating the likelihood of a coin toss resulting in heads by only tossing it once. Given the scant information and the minimal influence on the estimation of other parameters, this implementation skips updating it.
+
+<br>
+
+### **Baum-Welch Algorithm**
+
+The Baum-Welch Algorithm is the EM algorithm for the HMM. A function named `BW.onestep` is designed to carry out the E-step and M-step. This function is then called iteratively within `myBW`.
+
+`BW.onstep`
+
+- **Input**:
+  - `data`: a \( T \)-by-1 sequence of observations
+  - Current parameter values
+  
+- **Output**:
+  - Updated parameters: `A` and `B`
+  
+
+<br>
+
+#### **Implementation**
+
+```{r}
+BW.onestep <- function(data, mx, mz, w, A, B) {
+  
+  ### Notes ###
+  
+  ## INPUT:
+  # **data** is a [T,1] vector, that contains the value of X at each timestep T
+  # **mx** is the count of distinct values X can take.
+  # **mz** is the count of distinct values Z can take.
+  # **w** is a [mz,1] vector that represents the initial distribution for _Z1_
+  # **A** is the TRANSITION MATRIX [mz,mz], and represents the probabilities of going from a state Z_t to another state Z_t+1
+  # **B** is the EMISSION MATRIX [mz,mx], and represents the probabilities of getting a value of X from a value of Z.
+  
+  
+  ## This function calculates:
+  # **Forward probabilities** matrix alpha [T,mz]
+  # **Backward probabilities** matrix alpha [T,mz]
+  # **Gamma**
+  
+  ## and updates:
+  # **A**
+  # **B**
+  
+  #####  Implementation   ######################################################
+  
+  ##### Step 0: Definition of parameters #####
+  T <- length(data) 
+  
+  
+  
+  ##### Step 1: Calculate **alpha** ############################################
+  # Initialize the alpha matrix
+  alpha <- matrix(0, nrow=T, ncol=mz)
+  
+  # For T=1
+  for (i in 1:mz) {
+    alpha[1, i] <- w[i] * B[i, data[1]]
+  }
+  
+  # For T=2:T, recursive computation
+  for (t in 1:(T-1)) {
+    for (i in 1:mz) {
+      alpha[t+1, i] <- sum(alpha[t, ] * A[, i]) * B[i, data[t+1]]
+    }
+  }
+  
+
+  
+  ##### Step 2: Calculate **beta** #############################################
+  # Initialize the beta matrix
+  beta <- matrix(0, nrow=T, ncol=mz)
+  
+  # For T=1
+  beta[T, ] <- rep(1, mz)
+  
+  # For T=T-1:1, recursive computation going backwards! (see/run (T-1):1)
+  for (t in (T-1):1) {
+    for (i in 1:mz) {
+      beta[t, i] <- sum(A[i, ] * B[, data[t+1]] * beta[t+1, ])
+    }
+  }
+
+  
+  
+  ##### Step 3: Calculate **gamma** ############################################
+  # Initialize the gamma data structures
+
+  gamma <- array(0, dim = c(mz,mz,T-1))
+  gamma.i <- matrix(0, nrow=T, ncol=mz)
+  
+  for (t in 1:(T-1)) {
+    #GAMMA
+    xx <- matrix(0, nrow=mz, ncol=mz)
+    
+    for (i in 1:mz){
+      for (j in 1:mz){
+        xx[i,j] <- alpha[t,i]*A[i,j]*B[j, data[t+1]]*beta[t+1,j]
+      }
+    }
+    gamma[,,t] <- xx/sum(xx)
+    
+    #GAMMA.I
+    for (i in 1:mz){
+        gamma.i[t,i] <- sum(gamma[i,,t])
+    }
+  } 
+  
+  for (i in 1:mz){
+    gamma.i[T,i] <- sum(gamma[,i,t])
+  }
+  
+  
+  
+  ##### Step 4: Update **A** ###################################################
+  # Initialize the new A matrix
+  new.A <- matrix(0, nrow=mz, ncol=mz)
+  
+  # Numerator
+  numerator <- matrix(0, nrow=mz, ncol=mz)
+  for (t in 1:(T-1)){
+    numerator <- numerator + gamma[,,t]
+  }
+  # Denominator
+  denominator <- matrix(0, nrow=mz, ncol=mz)
+  for (i in 1:mz){
+    for (j in 1:mz){
+      denominator[i,j] <- sum(gamma.i[1:(T-1), i])
+    }
+  }
+  new.A <- numerator/denominator
+
+  
+  
+  ##### Step 5: Update **B** ###################################################
+  # Initialize the new B matrix
+  new.B <- matrix(0, nrow=mz, ncol=mx)
+  
+  for (i in 1:mz){
+    for (k in 1:mx){
+      # Numerator: Sum of gamma_i(t) where data[t] = k
+      num <- sum(gamma.i[data == k, i])
+      # Denominator: Sum of gamma_i(t) over all t
+      denom <- sum(gamma.i[, i])
+      
+      new.B[i, k] <- num / denom
+    }
+  }
+  
+  return(list(updated.A=new.A, updated.B=new.B))
+}
+```
+
+<br>
+
+### Iterative function: myBW Function
+
+Again, the `myBW` function that repeatedly calls the `BW.onestep` to update the **A** and **B** parameters after a defined number of iterations:
+
+```{r}
+myBW <- function(data, mx, mz, w, A, B, maxIterations) {
+  
+  updated.params <- BW.onestep(data, mx, mz, w, A, B)
+  # Progress
+  taco = progress_bar$new(total = maxIterations-1, format = "[:bar] [:percent] [Elapsed time: :elapsedfull] [ETA: :eta]", clear = FALSE)
+  
+  for (i in 2:maxIterations) {
+    updated.params = BW.onestep(data, mx, mz, w, updated.params$updated.A, updated.params$updated.B)
+    taco$tick()
+  }
+  
+  A = updated.params$updated.A
+  B = updated.params$updated.B
+  
+  return(list(updated.A=A, updated.B=B))  
+}
+```
+
+<br>
+
+
+
+
+
+### **Viterbi Algorithm**
+
+This algorithm outputs the most likely latent sequence considering the data and the MLE of the parameters.
+
+For the `myViterbi`function:
+
+- **Input**:
+  - `data`: a   \( T \)-by-1 sequence of observations
+  - `parameters`: \( m_x \), \( m_z \), \( w \), \( A \) and \( B \)
+  
+- **Output**:
+  -  `Z`: a   \( T \)-by-1 sequence where each entry is a number ranging from 1 to `m_z`.
+
+<br>
+
+**Note on Calculations in Viterbi:**
+
+Many computations in HMM are based on the product of a sequence of probabilities, resulting in extremely small values. At times, these values are so small that software like R or Python might interpret them as zeros. This poses a challenge, especially for the Viterbi algorithm, where differentiating between magnitudes is crucial. If truncated to zero, making such distinctions becomes impossible. Therefore, these probabilities are evaluated on a logarithmic scale in the Viterbi algorithm.
+
+
+<br>
+
+#### **Implementation** 
+
+```{r}
+myViterbi <- function(data, mx, mz, w, A, B) {
+  
+  # Implementation
+  
+  # Step 0: Definition of parameters
+  T <- length(data) 
+  delta <- matrix(0, nrow=T, ncol=mz)
+  psi <- matrix(0, nrow=T, ncol=mz)
+  Z <- numeric(T)
+  
+  
+  
+  ## **DELTA**
+  # For T=1
+  delta[1,] <- w * B[,data[1]]
+  
+  
+  # For T=2:T  
+  for (t in 2:T) {
+    for (j in 1:mz) {
+      temp <- log(delta[t-1,] * A[,j])
+      delta[t,j] <- exp(max(temp)) * B[j,data[t]]
+      psi[t,j] <- which.max(temp)
+    }
+  }
+  
+  
+  
+  ## **Z**
+  # For Z at T=T
+  prob <- exp(max(log(delta[T,])))
+  Z[T] <- which.max(delta[T,])
+  
+  # For Z at T=1:T-1, backtracking!
+  for (t in (T-1):1) {
+    Z[t] <- psi[t+1,Z[t+1]]
+  }
+  
+  return(list(Z=Z, prob=prob))
+}
+```
+
+
+
+<br>
+
+
+
+### Testing
+
+The code is put to test with the provided data sequence: [data.txt](Coding4_part2_data.txt) . To initialize, we set \( m_z = 2 \) and start with the following initial values:
+
+\[ w = \left( \begin{array}{cc} 0.5 & 0.5 \end{array} \right) ,\]
+\[ A = \left( \begin{array}{cc} 0.5 & 0.5 \\ 0.5 & 0.5 \end{array} \right) ,\]
+\[ B = \left( \begin{array}{ccc} \frac{1}{9} & \frac{1}{6} & \frac{3}{9} \\ \frac{1}{6} & \frac{5}{9} & \frac{3}{6} \end{array} \right) \]
+
+The implemented algorithms run through 100 iterations. The results from the implementation of the Baum-Welch algorithm should match with the following:
+
+```{r, class.source = 'fold-hide'}
+A_result <- matrix(c(0.49793938, 0.44883431, 0.50206062, 0.55116569), ncol=2)
+B_result <- matrix(c(0.22159897, 0.34175148, 0.20266127,  0.17866665, 0.57573976, 0.47958186), nrow=2)
+list(A = A_result, B = B_result)
+```
+
+
+The output from your Viterbi algorithm implementation should align with the following benchmarks. The results are cross-checked against the complete binary sequence available in [Coding4_part2_Z.txt].
+
+
+
+
+<br>
+
+#### **Reading the data**
+
+```{r}
+data <- read.table("Coding4_part2_data.txt") 
+data <- data[,1]
+data
+```
+
+<br>
+The dataset has `r length(data)` observations, and the X values are distributed as:
+
+```{r}
+table(data)
+```
+
+<br>
+
+#### **Input parameters**
+
+The following are the input parameters to test the HMM algorithms:
+```{r}
+mx <- nrow(table(data))
+mz <- 2
+w <- c(0.5, 0.5)
+A <- matrix(0.5, nrow=mz, ncol=mz)
+B <- matrix(c(1/9, 3/9, 5/9,
+              1/6, 2/6, 3/6),
+            nrow=2, byrow=TRUE)
+
+
+list(mx=mx, mz=mz, A=A,B=B)
+```
+
+<br>
+
+#### **Baum-Welch function test**
+
+Through 100 iterations, the implementation of the Baum-Welch algorithm is able to achieve:
+```{r}
+maxIterations <- 100
+# Progress
+#taco = progress_bar$new(total = maxIterations, format = "[:bar] [:percent] [Elapsed time: :elapsedfull] [ETA: :eta]", clear = FALSE)
+#taco$tick()
+my.params <- myBW(data, mx, mz, w, A, B, maxIterations) 
+my.params
+```
+
+<br>
+
+To compare this to some benchmark results, the `baumWelch` algorithm from the `HMM` library allows to update the parameters A and B as follows:
+```{r}
+# Using the library(HMM), function baumWelch()
+
+HMM <- initHMM(c("Z.1", "Z.2"), c("1", "2", "3"), startProbs=w, transProbs=A, emissionProbs=B)
+bw_result <- baumWelch(HMM, data, maxIterations)
+
+print(bw_result$hmm$transProbs)
+print(bw_result$hmm$emissionProbs)
+```
+
+, which are the same values referred to in the "Test" subsection. 
+
+
+<br>
+To test the accuracy of the implemented function, the two A and B matrices (obtained from the implementation and from the library HMM) are subtracted from one another:
+```{r}
+my.params$updated.A-bw_result$hmm$transProbs
+my.params$updated.B-bw_result$hmm$emissionProbs
+```
+<br>
+
+
+
+
+
+
+
+
+
+#### **Viterbi function test**
+
+With the implemented Viterbi algorithm, the hidden states sequence results in:
+```{r}
+Z = myViterbi(data, mx, mz, w, my.params$updated.A, my.params$updated.B)$Z
+Z
+table(Z)
+```
+
+
+<br>
+
+Similar to the test of the BW implementation, the `viterbi` algorithm from the `HMM` library allows to get the most likely possible sequence of hidden states Z (which is the sequence referenced in the "test" subsection earlier:
+
+```{r}
+# Using the library(HMM), function viterbi()
+
+HMM.Z <- initHMM(c("Z1", "Z2"), c("1", "2", "3"), startProbs=w, transProbs=my.params$updated.A, my.params$updated.B)
+Z.hmm <- viterbi(HMM.Z, data)
+
+Z.hmm.encoded <- as.integer(factor(Z.hmm, levels=c("Z1", "Z2")))
+Z.hmm.encoded
+table(Z.hmm.encoded)
+```
+
+
+<br>
+To test the accuracy of the implemented function, the two Z vectors are subtracted from one another:
+
+```{r}
+Z-Z.hmm.encoded
+```
+
+<br>
+<br>
+<br>
+
+#### Notes:
+
+- The total runtime of this R code is:
+```{r}
+end.time <- Sys.time()
+total.runtime <- end.time - start.time
+total.runtime
+```
+
+
+- The following code/R markdown document builds up from the material from and work done for the course **STAT 542: Statistical Learning.**
+
+
