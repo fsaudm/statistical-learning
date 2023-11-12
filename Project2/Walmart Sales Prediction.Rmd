@@ -1,0 +1,753 @@
+---
+title: 'Walmart Store Sales Forcasting'
+author: "Farid Saud"
+output:
+    html_document:
+      code_folding: show
+      toc: true
+      toc_float:
+        collapsed: false
+        smooth_scroll: true
+      toc_depth: 4
+      theme: cosmo
+      highlight: tango
+    pdf:
+---
+
+
+Notes on the making of this code/R markdown file, and total run-time are presented at the end of this document. To download the data and the source code, click [here](/Walmart Sales Prediction.zip).
+
+
+
+
+## Overview
+
+This project explores historical sales data from 45 Walmart stores spread across different regions, and explores different approaches to predict the future weekly sales for every department in each store. The data was obtained from [https://www.kaggle.com/c/walmart-recruiting-store-sales-forecasting](https://www.kaggle.com/c/walmart-recruiting-store-sales-forecasting).
+
+
+### Set-up
+```{r setup, echo = TRUE}
+knitr::opts_chunk$set(echo = TRUE,fig.align='center')
+start.time <- Sys.time()
+```
+
+
+### **Libraries**
+
+The following are the libraries used in the script and its purpose:
+- `tidyverse`: Data processing, data wrangling, and plots.
+- `lubridate`: Framework to handle dates and times.
+- `viridis`: Color palette.
+
+
+```{r echo=TRUE}
+knitr::opts_chunk$set(echo = TRUE, fig.align='center')
+
+library(knitr)
+#library(class)
+
+# Progress bar
+library(progress)
+
+# Misc.
+library(tidyverse) ## Includes ggplot and caret
+library(lubridate)
+
+#For the plots:
+library(viridis) #color palette
+library(UpSetR)
+
+```
+
+<br>
+
+## **Part I: Training Data**
+
+### 1.1. Loading the training data:
+
+The training data for this project is stored in 10 separate ["folds"](./Proj2_Data/). There is a [train.csv](./Proj2_Data/fold_1/train.csv) file in every fold, each containing 5 columns:
+
+-   `Store`
+-   `Dept`
+-   `Date`
+-   `Weekly_Sales`
+-   `IsHoliday`
+
+```{r}
+for (fold in 1:10) {
+  
+  # Construct the path to the files for this fold
+  fold_folder <- file.path("./Proj2_Data", paste0("fold_", fold))
+  
+  # Read the training data
+  train_path <- file.path(fold_folder, "train.csv")
+  assign(paste0("train_", fold), read.csv(train_path, header = TRUE))
+
+}
+```
+
+<br>
+
+These datasets look like the following:
+```{r}
+head(train_7)
+```
+
+
+
+### 1.2. NA observations:
+
+Prior to further analysis and transformations of the variables, it is critical to deal with missing values, if any. In this analysis, any incomplete observation is handled by transforming the “NA” into “0”. By doing so, removing observations is avoided. The function `complete.cases()` can provide insightful information to understand if there are any missing observations. With this function, an observation that has a `NA` in any variable would not be counted as an incomplete case:
+
+
+
+```{r}
+for (fold in 1:10) {
+  
+  # Construct the path to the files for this fold
+  train <- get(paste0("train_", fold))
+  
+  # Read the training data
+  tmp <- as.matrix(t(table(complete.cases(train))))
+  
+  cat("Complete.cases for ", paste0("fold_", fold), ": ", tmp, " \n                    , out of ", dim(train)[1],"\n\n")
+}
+```
+
+
+
+
+### 1.3. Investigation of observations of training datasets: Folds, stores, and departments in stores:
+This section explores more in depth how many `Weekly_Sales` observations there are in the training datasets, per store and department. For this purpose, the initial step taken is to analyse the count of observations per store and department in the training datasets:
+
+```{r}
+for (fold in 1:10) {
+  
+  # Get the training and testing data per fold
+  train <- get(paste0("train_", fold))
+  
+  # Create a dynamic title based on the fold number
+  title <- paste("Count of Observations per Store and Dept - Training Dataset #", fold)
+  
+  # Create a heatmap
+  g <- ggplot(train, aes(x = Dept, y = Store)) +
+    geom_bin2d() +
+    scale_x_continuous(breaks = seq(min(train$Dept), max(train$Dept), by = 3)) +
+    scale_y_continuous(breaks = seq(min(train$Store), max(train$Store), by = 3)) +
+    scale_fill_viridis_c(direction = 1) +
+    labs(x = "Store", y = "Department", fill = "Frequency", title = title) +
+    theme_void() +
+    theme(
+      axis.text.x = element_text(angle = 90, hjust = 1,  margin = margin(t = 10, r = 0, b = 10, l = 0)),
+      axis.text = element_text(size = 10),
+      axis.title.y = element_text(angle = 90, size = 12, margin = margin(t = 0, r = 10, b = 0, l = 10)),
+      axis.title = element_text(size = 12),
+      plot.title = element_text(size = 14, hjust = 0.5)
+    ) 
+
+  # Add the plot to the list
+  print(g)
+}
+```
+
+<br>
+
+
+
+## **Part II: Training and testing Data**
+
+### 2.1. Loading the training data:
+
+The test data is stored in the same folds as the training data, with one [test.csv](./Proj2_Data/fold_1/test.csv) in each fold. These can be loaded in a similar way as the trainig data was loaded:
+```{r}
+
+for (fold in 1:10) {
+
+  # Construct the path to the files for this fold
+  fold_folder <- file.path("./Proj2_Data", paste0("fold_", fold))
+  
+  # Read the training data
+  test_path <- file.path(fold_folder, "test.csv")
+  assign(paste0("test_", fold), read.csv(test_path, header = TRUE))
+
+}  
+```
+
+<br>
+
+The test datasets contain the same variables as the training datasets, except for the `Weekly_Sales` variable. This will be the response variable in further analyses. These look like this:
+
+```{r}
+head(test_7)
+```
+
+<br>
+
+Note that the test sets span for 8 weeks after each corresponding training set’s last recorded date. For instance, if working with fold 1, where the last observation corresponds to:
+```{r, class.source = 'fold-hide'}
+max(train_1$Date)
+```
+
+, the weeks of the test set corresponds to the 8 following weeks:
+```{r}
+unique(test_1$Date)
+```
+
+, (of course, starting on the week right after):
+```{r}
+date(max(train_1$Date))+7
+```
+
+### 2.2. Labeled Test data
+
+
+Conveniently, a dataset that contains the correct labels for the observations in the test sets is available: [test_with_label.csv](./Proj2_Data/test_with_label.csv), and it is loaded as follows:
+
+```{r}
+test_with_label = read.csv("Proj2_Data/test_with_label.csv")
+```
+
+<br>
+
+This file contains the real values of `Weekly_Sales` for the dates included in the testing data time span, and has the same structure as the training and testing(plus the `Weekly_Sales` column). This information becomes very useful later on to test the predictions accuracy. 
+
+
+## Data processing
+
+Since several approaches are explored for the predictive analysis described in the following section, the details on data manipulation and transformations are discussed more in detail in every approach's subsection. 
+
+
+
+## **Part III: Error Metric**
+
+### 3.1. Error/Evaluation metric:
+
+To test the accuracy of the predictions of this analysis, the metric used is weighted mean absolute error, `WMAE`. An implementation of a function that calculates this is error presented below:
+
+```{r}
+myeval = function(predict.name, test_with_label = test_with_label, num_folds){
+  
+  wmae = rep(0, num_folds)
+
+  for (i in 1:num_folds) {
+    
+    # Use already loaded test data frame
+    test = get(paste0("test_", i))
+    test =  test %>%
+      select(-IsHoliday) %>%
+      left_join(test_with_label, by = c('Date', 'Store', 'Dept'))
+    
+    # Use already loaded predictions data frame
+    test_pred = get(paste0(predict.name, i))
+    
+    new_test <- test %>%
+      left_join(test_pred, by = c('Date', 'Store', 'Dept'))
+    
+    actuals = new_test$Weekly_Sales
+    preds = new_test$Weekly_Pred
+    weights = if_else(new_test$IsHoliday.x, 5, 1)
+    weighted.sum = weights * abs(actuals - preds)
+    
+    weighted.sum[is.na(weighted.sum)] <- 0 
+    wmae[i] = sum(weighted.sum) / sum(weights)
+  }
+  return(list(wmae = wmae, mean.wmae = mean(wmae)))
+}
+```
+
+<br>
+
+This function:
+
+* Takes as **input** the name of the test with predictions set `predict.name`, the target dataset `test_with_label` that defaults to "test_with_label" (purposely, the previously loaded dataframe that contains the real labels), and the number of folds `num_folds`.
+
+* Calculates as **output** the `wmae` per fold and the `mean.wmae` of all the folds.
+
+
+<br>
+
+
+## **Part IV: Predictive Analysis**
+
+
+### 4.1. A simplistic approach
+
+As a first approach into the predictive analysis, a naive solution could be using the sales data from the most recent week to forecast all subsequent weekly sales. For instance, if working with fold 1, the prediction for the 8 weeks in the test set, that follow the last recorded week in train set, will have the same value for Weekly_Sales. Based on the nature of this data, a quick processing time would be greatly benefitial. A code that loops through every fold and predicts the `Weekly_Sales` as per this approach is presented:
+
+```{r}
+for (fold in 1:10) {
+  
+  # Get the the training and testing data per fold
+  train <- get(paste0("train_", fold))
+  test  <- get(paste0("test_", fold))
+
+  
+  ##### Simplistic Strategy: #####
+  # Assigning the latest weekly sales to every combination of store and department as the prediction.
+  most_recent_date <- max(train$Date)
+  
+  tmp_train <- train %>%
+    filter(Date == most_recent_date) %>%
+    dplyr::rename(Weekly_Pred = Weekly_Sales) %>%
+    select(-Date, -IsHoliday)
+  
+  test_pred <- test %>%
+    left_join(tmp_train, by = c('Dept', 'Store')) 
+  
+  
+  # assign zero to missing predictions
+  id = is.na(test_pred$Weekly_Pred)
+  test_pred$Weekly_Pred[id] = 0
+  
+  assign(paste0("simplistic.pred_", fold), test_pred)
+}
+```
+
+The structure of the resulting predictions looks as follows:
+
+```{r}
+head(simplistic.pred_1)
+```
+
+
+The accuracy of these results can be evaluated using the previously implemented error function:
+
+```{r}
+myeval(predict.name="simplistic.pred_", test_with_label, num_folds=10)
+```
+
+<br>
+Since this is a simplistic way of "predicting" future sales, more complicated methodologies are likely to give better results.
+
+
+### 4.2. Linear Regression Models
+
+An interesting idea could be using the information of the data to fit a regression model. For instance, temporal information in the variables `Yr` and `Date`: predict using the sales of a corresponding `week`: a numerical representation of each week of the year, ranging from 1 to 52 (or occasionally 53) (achieved by using the week function from the lubridate package) of the previous year being predicted. This is, for example, when predicting sales for Week 20 of 2011, use the data from Week 20 of 2010. 
+
+<br>
+
+Considering these two variables as predictors, a linear regression model characterized as: `Y ~ Yr + Wk` is fitted for every pair of store and department. Now, doing this would like result in many linear models to be fitted, approximately:
+
+```{r, class.source = 'fold-hide'}
+length(unique(train_10$Store)) * length(unique(train_10$Dept))*10 # multiplied by 10 to account for the 10 folds
+```
+
+, a task that would likely be computationally very expensive. It is imperative to do this process in an time-economic way. The main idea behind the implementation is that not all departments/stores need a prediction. Departments not listed in the test sets and stores without data can be skipped. Such efficient implementation is presented below:
+
+```{r}
+# Progress
+pb <- progress_bar$new(total = 10, format = "[:bar] [:percent] [Elapsed time: :elapsedfull] [ETA: :eta]", force = TRUE)
+
+for (fold in 1:10) {
+  
+  # Get the training and testing data per fold
+  train <- get(paste0("train_", fold))
+  test  <- get(paste0("test_", fold))
+  
+  
+  # find the unique pairs of (Store, Dept) combo that appeared in both training and test sets
+  train_pairs <- train[, 1:2] %>% count(Store, Dept) %>% filter(n != 0)
+  test_pairs <- test[, 1:2] %>% count(Store, Dept) %>% filter(n != 0)
+  unique_pairs <- intersect(train_pairs[, 1:2], test_pairs[, 1:2])
+    
+  # pick out the needed training samples, convert to dummy coding, then put them into a list
+  train_split <- unique_pairs %>% 
+    left_join(train, by = c('Store', 'Dept')) %>% 
+    mutate(Wk = factor(ifelse(year(Date) == 2010, week(Date) - 1, week(Date)), levels = 1:52)) %>%
+    mutate(Yr = year(Date))
+
+  test_split <- unique_pairs %>% 
+    left_join(test, by = c('Store', 'Dept')) %>% 
+    mutate(Wk = factor(ifelse(year(Date) == 2010, week(Date) - 1, week(Date)), levels = 1:52)) %>%
+    mutate(Yr = year(Date))
+  
+  # construct the design matrix only once
+  train_split = as_tibble(model.matrix(~ Weekly_Sales + Store + Dept + Yr + Wk, train_split)) %>%
+    group_split(Store, Dept)
+  test_split = as_tibble(model.matrix(~ Store + Dept + Yr + Wk, test_split)) %>%
+    mutate(Date = test_split$Date) %>% 
+    group_split(Store, Dept)
+  
+  # pre-allocate a list to store the predictions
+  test_pred <- vector(mode = "list", length = nrow(unique_pairs))
+
+  
+  # perform regression for each split, note we used lm.fit instead of lm
+  for (i in 1:nrow(unique_pairs)) {
+    
+    # Training Data
+    tmp_train <- train_split[[i]]
+    
+    x.train <- as.matrix(tmp_train[, -(2:4)])
+    x.train <- as.matrix(   cbind(x.train[,c(1:2),  drop = FALSE],
+                                  "Yr2" = (x.train[,c(2),  drop = FALSE])^2, 
+                                  x.train[,-c(1, 2), drop = FALSE])   )  # adds year^2 column as the second column of the matrix
+    
+    y.train <- tmp_train$Weekly_Sales
+    
+    
+    # Testing Data
+    tmp_test <- test_split[[i]]
+    
+    x.test <- as.matrix(tmp_test[, 4:55])
+    x.test <- as.matrix( cbind("Yr" = x.test[,c(1),  drop = FALSE],
+                               "Yr2" = (x.test[,c(1),  drop = FALSE])^2, 
+                               x.test[,-c(1), drop = FALSE])) # adds year^2 column as the second column of the matrix
+    
+    
+    # Model
+    mycoef <- lm.fit(x.train, y.train)$coefficients
+    mycoef[is.na(mycoef)] <- 0
+    
+    # Prediction
+    tmp_pred <- mycoef[1] + x.test %*% mycoef[-1] 
+    tmp_pred[is.na(tmp_pred)] <- 0
+    
+    
+    
+    tmp_pred.df <- data.frame( Store = unique(tmp_test$Store),
+                               Dept = unique(tmp_test$Dept),
+                               Date = tmp_test$Date,
+                               IsHoliday = test[test$Store == unique(tmp_test$Store) & test$Dept == unique(tmp_test$Dept),]$IsHoliday,
+                               Weekly_Pred = tmp_pred)
+    
+      test_pred[[i]] <- tmp_pred.df
+    }
+    
+   # This combines the results of all the linear models as dataframes already into a big dataframe for the fold.   
+   assign(paste0("test.pred_", fold), bind_rows(test_pred))
+  
+   # Update the progress bar
+   pb$tick()
+}
+```
+
+<br>
+
+Just like before, the accuracy can be evaluated using the implemented WMAE function:
+
+```{r}
+myeval(predict.name="test.pred_", test_with_label, num_folds=10)
+```
+
+<br>
+
+When compared to the first approach, this models take an approximate of 2 minutes to run, but yield significantly better predictions in terms of the defined error metric. Furthermore, the same analysis performed with a slightly different model: `Y ~ Yr + Yr^2 + Wk`, where the quadratic term looks to leverage the 'year' information even further, produces slightly better results. But it turns out that it is possible to improve the results even further. 
+
+
+### 4.3. Linear Regression Models on smooth data
+
+### **SVD - Smoothed data**
+
+Starting from recommendations from previous works on this data (Prof. Feng Liang), and through trial and error, it was determined that the performance of the predictive models improved significantly when working with a 'smoothed/denoised version' of the training data. To achieve this, Singular Value Decomposition (SVD) was performed using the `svd()` function, included in the base R. The idea behind this is that that the dominant shared Principal Components (PCs) likely represent meaningful signals, whereas PCs with minimal variances are mostly noise. Thus, the original "noisy" dataset ${X}$ is set aside, and the predictive analysis is performed with the de-noised dataset $\tilde{X}$. In this analysis, the number of PCs kept is set to `d=8`.
+
+
+```{r}
+# Progress
+pb <- progress_bar$new(total = 10, format = "[:bar] [:percent] [Elapsed time: :elapsedfull] [ETA: :eta]", force = TRUE)
+
+for (fold in 1:10) {
+  
+  # Get the training and testing data per fold
+  train <- get(paste0("train_", fold))
+  train_smoothed <- data.frame()
+  d <- 8  # Specify the number of components to keep
+
+  existing.dept = unique(train$Dept)
+  
+  for (department in existing.dept) {
+
+    train_dep <- train[ which(train$Dept== department ), ]
+    
+    if (length(unique(train_dep$Store))<2) {
+      data_frame <- data.frame(Store = train_dep$Store, Dept=train_dep$Dept, Date=train_dep$Date, Weekly_Sales = train_dep$Weekly_Sales)
+    }
+    
+    else{
+    train_temp2 <- train_dep %>% 
+      select(Store, Date, Weekly_Sales) %>% 
+      spread(Store, Weekly_Sales)
+    train_temp2[is.na(train_temp2)] <- 0
+    
+    train_temp3 <-  t(train_temp2[, -1])
+    
+    # To center the dataset
+    store.mean <- rowMeans(train_temp3)
+    train_temp4 <- (train_temp3)-store.mean
+    
+    # SVD
+    svd_result <- svd(train_temp4)
+    U <- svd_result$u
+    D <- diag(svd_result$d)
+    V <- svd_result$v
+    
+    min.com = ncol(U)
+    X_reduced_temp <- (U[,1:min(min.com,d)] %*% D[1:min(min.com,d),1:min(min.com,d)] %*% t(V[,1:min(min.com,d)])) 
+    X_reduced <- X_reduced_temp + matrix(rep(store.mean, times = dim(X_reduced_temp)[2]), nrow = length(store.mean), ncol = dim(X_reduced_temp)[2])
+    
+    X_reduced_df<- as.data.frame(t(X_reduced))
+    names(X_reduced_df) <- names(train_temp2)[-1]
+    X_reduced_df$Date <- train_temp2$Date
+    data_frame_temp <- gather(X_reduced_df, key = "Store", value = "Weekly_Sales", -Date)
+    data_frame_temp$Dept <-rep(department, times  = dim(data_frame_temp)[1])
+    desired_order <- c("Store", "Dept", "Date","Weekly_Sales")
+    data_frame_temp <- data_frame_temp[, desired_order]
+    data_frame_temp$Store<- as.numeric(data_frame_temp$Store)
+    }
+    
+    train_smoothed <- rbind(train_smoothed, data_frame_temp)
+  }  
+    
+    assign(paste0("train.smooth_", fold), train_smoothed)
+   
+   # Update the progress bar
+   pb$tick()
+} 
+
+```
+
+<br>
+
+The resulting reconstructed and denoised `train.smooth` dataframes hold the same structure as the original training data:
+
+```{r}
+head(train.smooth_7)
+```
+
+<br>
+
+
+Now, for this predictive modeling, the training and testing data undergo the same transformations required for the previous approach (4.2.):
+
+1. For each `store` and each `department` within that store, a list of the unique pairs of departments and stores that are present in both the training and testing set is built.
+2. Using functions from the `lubridate` library, a new variable **`Wk`**(week) replaces the `Date` variable. This makes working with the dates easier and more systematic.
+
+<br>
+
+For each unique pair of **`store`** and **`department`**, using the variables **`Yr`** and its square **`Yr^2`** as a numerical predictor and `Wk` as a categorical predictor, a linear regression model characterized as: `Y ~ Yr + Yr^2 + Wk` is fitted using the `lm.fit()` function. With such models, the predictions are made for the corresponding 'test' dataset. 
+
+
+<br>
+
+
+The following code loops through all the folds, handles the described transformations, fits a multiple linear regression model to predict the `Weekly_Sales` for the weeks of the testing datasets, and stores the predictions in a _test.pred.smooth_i_ dataframe:
+    
+```{r}
+# Progress
+pb <- progress_bar$new(total = 10, format = "[:bar] [:percent] [Elapsed time: :elapsedfull] [ETA: :eta]", force = TRUE)
+
+for (fold in 1:10) {
+  
+  # Get the training and testing data per fold
+  train <- get(paste0("train.smooth_", fold))
+  test <- get(paste0("test_", fold))
+ 
+  
+  # find the unique pairs of (Store, Dept) combo that appeared in both training and test sets
+  train_pairs <- train[, 1:2] %>% count(Store, Dept) %>% filter(n != 0)
+  test_pairs <- test[, 1:2] %>% count(Store, Dept) %>% filter(n != 0)
+  unique_pairs <- intersect(train_pairs[, 1:2], test_pairs[, 1:2])
+  
+  
+  # pick out the needed training samples, convert to dummy coding, then put them into a list
+  train_split <- unique_pairs %>% 
+    left_join(train, by = c('Store', 'Dept')) %>% 
+    mutate(Wk = factor(ifelse(year(Date) == 2010, week(Date) - 1, week(Date)), levels = 1:52)) %>%
+    mutate(Yr = year(Date))
+
+  test_split <- unique_pairs %>% 
+    left_join(test, by = c('Store', 'Dept')) %>% 
+    mutate(Wk = factor(ifelse(year(Date) == 2010, week(Date) - 1, week(Date)), levels = 1:52)) %>%
+    mutate(Yr = year(Date))
+  
+  
+  # construct the design matrix only once
+  train_split = as_tibble(model.matrix(~ Weekly_Sales + Store + Dept + Yr + Wk, train_split)) %>%
+    group_split(Store, Dept)
+  
+  test_split = as_tibble(model.matrix(~ Store + Dept + Yr + Wk, test_split)) %>%
+    mutate(Date = test_split$Date) %>% 
+    group_split(Store, Dept)
+  
+  # pre-allocate a list to store the predictions
+  test_pred <- vector(mode = "list", length = nrow(unique_pairs))
+  
+
+  
+  
+  # Perform regression for each split, note we used lm.fit instead of lm
+  for (i in 1:nrow(unique_pairs)) {
+    
+    # Training Data
+    tmp_train <- train_split[[i]]
+
+    x.train <- as.matrix(tmp_train[, -(2:4)])
+    x.train <- as.matrix(   cbind(x.train[,c(1:2),  drop = FALSE],"Yr2" = (x.train[,c(2),  drop = FALSE])^2, x.train[,-c(1, 2), drop = FALSE])   )  # adds year^2 column as the second column of the matrix
+    
+    y.train <- tmp_train$Weekly_Sales
+    
+    # Testing Data
+    tmp_test <- test_split[[i]]
+    
+    x.test <- as.matrix(tmp_test[, 4:55])
+    x.test <- as.matrix( cbind("Yr" = x.test[,c(1),  drop = FALSE],"Yr2" = (x.test[,c(1),  drop = FALSE])^2, x.test[,-c(1), drop = FALSE])) # adds year^2 column as the second column of the matrix
+    
+    
+    
+    # Model
+    mycoef <- lm.fit(x.train, y.train)$coefficients
+    
+    mycoef[is.na(mycoef)] <- 0
+    tmp_pred <- mycoef[1] + x.test %*% mycoef[-1]
+    tmp_pred[is.na(tmp_pred)] <- 0
+    
+    tmp_pred.df <- data.frame(
+      Store = unique(tmp_test$Store),
+      Dept = unique(tmp_test$Dept),
+      Date = tmp_test$Date,
+      IsHoliday = test[test$Store == unique(tmp_test$Store) & test$Dept == unique(tmp_test$Dept),]$IsHoliday,
+      Weekly_Pred = tmp_pred)
+    
+      test_pred[[i]] <- tmp_pred.df
+    }
+    
+   # This combines the results of all the linear models as dataframes already into a big dataframe for the fold.   
+   assign(paste0("test.pred.smooth_", fold), bind_rows(test_pred))
+  
+   # Update the progress bar
+   pb$tick()
+}
+
+```
+
+
+<br>
+
+The accuracy of the predictions obtained through the used methodology can be evaluated using the WMAE function implemented earlier:
+
+```{r}
+myeval(predict.name="test.pred.smooth_", test_with_label, num_folds=10)
+```
+
+<br>
+
+This approach takes pretty much the same amount of time as _4.2._ to perform the analyses and yields an improved performance. Such improvements lead to comparable results to the benchmark discussed in the Kaggle competition where this data was obtained from.
+
+
+#### Results Visualization
+
+The predicted sales can be visualized against the real values for each fold and the time span that fold corresponds to:
+```{r}
+for (fold in 1:10) {
+    # Get the training and testing data per fold
+    target <- get(paste0("test_", fold))
+    test.pred  <- get(paste0("test.pred.smooth_", fold))
+  
+    #Target/labels
+    target_ = target %>%
+          select(-IsHoliday) %>%
+          left_join(test_with_label, by = c('Date', 'Store', 'Dept'))
+    
+    target_ = target_ %>%
+      group_by(Date) %>%  # Group by week
+      summarize(Target = mean(Weekly_Sales))
+    
+    #Predictions
+    predct_ = test.pred %>%
+      group_by(Date) %>%  # Group by week
+      summarize(Prediction = mean(Weekly_Pred))
+  
+  
+    # Combine the 'target_' and 'predct_' datasets into one
+    test.vs.pred <- cbind(
+      "Date" = target_$Date,
+      "Target" = target_[,2, drop = FALSE], 
+      "Prediction" = predct_[,2, drop = FALSE])
+  
+
+    # Dynamic title based on the fold number
+  title <- paste("Weekly Sales - Target vs. Prediction, Fold #", fold)
+  
+  p <- ggplot(test.vs.pred, aes(x = as.Date(Date))) +
+      geom_line(aes(y = Target, color = "Target"), linetype = "solid") +
+      geom_point(aes(y = Target, color = "Target")) +
+      
+      geom_line(aes(y = Prediction, color = "Prediction"), linetype = "solid") +
+      geom_point(aes(y = Prediction, color = "Prediction")) +
+
+      scale_color_manual(
+        values = c("Target" = "#440154FF", "Prediction" = "#55C667FF"),
+        labels = c("Target", "Prediction")
+      ) +
+      labs(
+        x = "Date",
+        y = "Weekly Sales",
+        title = title,
+        color = "Data Source"  # This will be the title of the legend for color
+      ) +
+      theme_minimal() +
+      theme(
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.text = element_text(size = 10),
+        axis.title = element_text(size = 12, face = "bold"),
+        plot.title = element_text(size = 12, face = "bold", hjust = 0.5)
+      )
+     
+     
+    print(p)
+}
+```
+
+
+
+#### 4.4. Other approaches explored
+
+During this project, several other methodologies where implemented. Among these, some ideas regarded:
+
+a. More complex predictive models, like random forests and other non-linear statistical models.
+b. Including other variables as predictors: `IsHoliday`, as a categorical variable.
+c. Trying to build upon the linear regression model and making it robust to "outliers" by using an L1-norm optimization (as oposed to the classical L2-norm approach): 
+
+```{r}
+  my.L1 <- function(params) {
+    # params is a vector
+    
+    # ** y_hat * x **
+    y_hat = params[1] + x.train[,-1] %*% params[-1]
+    
+    # ** r **
+    res = y_hat - y.train  
+    
+    # ** L1 Norm **
+    return(norm(res, type = "1")) 
+  }
+
+# &&
+
+##### Robust Regression with L1 norm
+  ## L2 coeffs used as a starting point. Updated with:
+  mycoef <- optim(mycoef, my.L1)$par
+```
+
+<br>
+These approaches came at a significant computational price (specially a. and c., given the nature of the data and the models, and the optimization steps), but no significant improvements were found. A more extensive, in-depth analysis may result in interesting findings on these approahces (or any other relevant techniques, for that matter) for this problem. 
+
+
+<br><br><br>
+
+Notes:
+
+<br>
+
+The total runtime of this R code is:
+
+```{r}
+end.time <- Sys.time()
+total.runtime <- end.time - start.time
+total.runtime
+```
+
+
+The presented code/R markdown document builds up from the material from and work done for the course STAT 542: Statistical Learning.
+
+
