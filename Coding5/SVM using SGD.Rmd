@@ -1,0 +1,266 @@
+---
+title: '(PSL) Coding Assignment 5'
+author: "Pasquale Bottalico, Johann Cardenas, Farid Saud"
+output:
+    html_document:
+      code_folding: show
+      toc: true
+      toc_float:
+        collapsed: false
+        smooth_scroll: true
+      toc_depth: 3
+      theme: cosmo
+      highlight: tango
+---
+
+Notes on the making of this code/R markdown file, and total run-time are presented at the end of this document. To download the data and the source code, click [here](./SVM-using-SGD.zip).
+
+
+### **Set-up**
+```{r setup, echo=TRUE}
+knitr::opts_chunk$set(echo = TRUE,fig.align='center')
+start.time <- Sys.time()
+options(digits=8)
+```
+
+
+### Introduction
+
+This following is an implementation of a linear Support Vector Machine (SVM) classifier from scratch using stochastic gradient descent (SGD).
+
+<br>
+
+Traditionally, SVMs often solve the dual problem, which involves a quadratic objective function subject to linear constraints. While this approach can be efficient for small-scale tasks, it becomes less practical for large-scale problems. In such cases, it is convenient to leverage the benefits of SGD to directly solve the primal problem.
+
+
+## **Part I: SGD Algorithm**
+
+
+The SGD algorithm works as follows:
+
+1. Start by choosing a random initial value of parameters
+2. Loop Over **Epochs**: In each epoch, go through the entire dataset once. An epoch is a complete pass through all the training data.
+3. Loop Over **Data Points**: Within each epoch, iterate over each data point in your training dataset.
+4. Update the **Gradient**: For each data point, calculate the gradient of the loss function with respect to the current parameter values. This gradient represents the direction of steepest ascent.
+5. Calculate **Step Sizes**: For each parameter, calculate the step size as : step size = gradient * learning rate.
+6. **Update Parameters**: Update new parameters as : new params = old params - step size
+7. **Repeat Until Convergence**: Repeat steps 3 to 6 for each data point in the dataset. Continue this process for a fixed number of epochs or until convergence criteria are met.
+
+
+### Pegasos Algorithm
+
+
+The Pegasos (Primal Estimated sub-GrAdient SOlver for SVM) algorithm, proposed by Shalev-Shwartz et al. (2011) [Paper Link](https://home.ttic.edu/~nati/Publications/PegasosMPB.pdf), is an application of SGD.
+
+<br>
+
+In SVM, the primal problem of linear SVM can be expressed as the following the Loss + Penalty format:
+
+\[
+\frac{\lambda}{2} \parallel \boldsymbol{\beta} \parallel^2 + \frac{1}{n} \sum_{i=1}^{n} \left[ 1 - y_i (x_i^t \beta + \alpha) \right]^{+}
+\]
+
+, where α is the intercept and β is the p-dimensional coefficient vector.
+
+
+The Pegasos Algorithm can be summarized as follows:
+
+1. initialize β=0p×1, α1=0, and t=0
+2. for epoch = 1, 2, …, T do:
+  - for i = 1, 2, …, n do
+    - t=t+1,ηt=1tλ
+    - update βt+1⇐βt−ηtΔt
+    - update αt+1⇐αt−ηtδt
+
+
+Here ηt is the learning rate, and Δt and δt are the (sub)gradient of Ji(β,α) when β=βt and α=αt:
+
+\[
+J_i(\beta, \alpha) = \frac{\lambda}{2}{\| \boldsymbol{\beta}\|^2} + \big
+[ 1 - y_i(x_i^t \beta + \alpha) \big]_+
+\]
+
+
+
+\[
+\Delta_t = \left \{ \begin{array}{ll} \lambda \beta_t - y_i x_i &
+\text{ if  } \ y_i(x_i^t \beta_t + \alpha_t) < 1 \\
+\lambda \beta_t  & \quad \text{otherwise}
+\end{array} \right.
+\]
+
+
+\[
+\delta_t = \left \{ \begin{array}{ll}  - y_i  & \text{ if  } \
+y_i(x_i^t \beta_t + \alpha_t) < 1 \\
+0  & \quad \text{otherwise}
+\end{array} \right.
+\]
+
+
+
+
+### Implementation
+
+In this implementation of the Pegasos algorithm, for the SVM classifier:
+
+- The number of epochs will be fixed, e.g.,T=20.
+- In each epoch, before going through the dataset, the order of the data points is randomized (and for reproducibility, a random seed is set).
+
+
+```{r}
+# Generate some sample data
+set.seed(0443)   #Last four digits of Farid Saud's UIN
+
+
+# Pegasos algorithm
+pegasos_algorithm <- function(X, y, lambda , epochs) {
+  
+  n <- nrow(X)
+  p <- ncol(X)
+  
+  # Binary coding for Y, using the smaller label as the -1 case
+  y <- ifelse(y == unique(y)[1], -1, 1)
+  
+  # Initialize parameters
+  beta <- numeric(p)
+  alpha <- 0
+  t=0
+  
+  # Update the parameters
+  for (epoch in 1:epochs) {
+    #set.seed(epoch)  # Randomize the order of data points 
+    idx <- sample(1:n, n, replace = FALSE)
+    
+    for (i in idx) {
+      
+      t <- t + 1
+      eta = 1/(lambda*t)
+      
+      
+      xi <- X[i, ] # shuffling
+      yi <- y[i]
+      
+      # calculating the gradient and delta
+      if (yi*(beta %*% xi+alpha) < 1) {
+        gradient <- lambda*beta - yi * xi
+        delta <- -yi
+      } else {
+        gradient <- lambda*beta 
+        delta <- 0
+      }
+      
+      # update β and alpha
+      beta <- beta - eta*gradient
+      alpha <- alpha - eta*delta  
+    }
+  }
+  
+  return(list(beta = beta, alpha = alpha))
+}
+```
+
+
+## **Part II: Testing the implemented function**
+
+To test the implemented linear SVM classifier, a subset of the MNIST data: specifically, training (200 samples) and test (600 samples) datasets of 5s and 6s, is used. Each dataset consists of 257 columns, with the first 256 columns representing the features, and the last column indicating the label.
+
+<br>
+The [training data](./coding5_train.csv) is loaded and subdivided into $X_{train}$ and $Y_{train}$:
+
+```{r}
+train <- read.csv("coding5_train.csv", header = TRUE) 
+X_train<-train[,1:256]
+y_train <- train[,257]
+table(y_train)
+```
+
+<br>
+, and similarly, the [testing data](./coding5_test.csv) is loaded and subdivided into $X_{test}$ and $Y_{test}$: :
+
+```{r}
+test <- read.csv("coding5_test.csv", header = TRUE) 
+X_test <- test[,1:256]
+y_test <- test[,257] 
+table(y_test)
+```
+<br>
+Tables summarizing the label count for both the training and testing data are presented as well.
+
+
+### Implementation test
+
+To understand if the implementation is working correctly, it may be useful looking at how the algorithm works with the training data. With the weights obtained from the algorithm, and the $X_{train}$ matrix, it is possible to classify $Y_{train}$ as:
+
+```{r}
+# Apply Pegasos algorithm to the train dataset
+
+result_train <- pegasos_algorithm(as.matrix(X_train), y_train,lambda = 1 , epochs =20)
+predicted_labels_train <- sign( as.matrix(X_train) %*% result_train$beta  +  result_train$alpha)
+labels_train <- ifelse(predicted_labels_train < 0, 5, ifelse(predicted_labels_train > 0, 6, NA))
+table(labels_train)
+```
+
+<br>
+In a similar way, now with unseen data: $X_{test}$, the algorithm can be used to predict the labels of the test data as:
+
+```{r}
+# Predict the test labels using the SVM modelesd with the train dataset the test dataset
+
+predicted_labels_test <- sign( as.matrix(X_test) %*% result_train$beta  +  result_train$alpha)
+labels_test <- ifelse(predicted_labels_test < 0, 5, ifelse(predicted_labels_test > 0, 6, NA))
+table(labels_test)
+```
+
+### Accuracy report
+
+With the results obtained in the previous section, confusion tables are presented for the training and testing datasets:
+
+```{r}
+conf_matrix_train  <- table(Actual = y_train, Predicted = labels_train)
+conf_matrix_train
+```
+
+```{r}
+conf_matrix_test  <- table(Actual = y_test, Predicted = labels_test)
+conf_matrix_test
+```
+
+<br>
+The miss-classified cases can be obtained by comparing the real labels with the predicted labels, and these are:
+
+```{r}
+misscl <- sum(y_test != labels_test)
+misscl
+```
+
+<br>
+Finally, this implementation of a linear SVM classifier, using the Pegasos algorithm, achieved a **test error** of:
+
+```{r}
+error = misscl/length(y_test)
+sprintf("%.2f%%", error * 100)
+```
+
+
+
+
+<br><br><br>
+
+#### Notes:
+
+<br>
+
+The total runtime of this R code is:
+
+```{r, class.source = 'fold-hide'}
+end.time <- Sys.time()
+total.runtime <- end.time - start.time
+total.runtime
+```
+
+
+
+- The following code/R markdown document builds up from the material from and work done for the course **STAT 542: Statistical Learning.**
+
+
